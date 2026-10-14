@@ -1,0 +1,191 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>ESP8266 Sensor Dashboard</title>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+  <style>
+    :root {
+      --bg: #f3f6fb;
+      --card: #ffffff;
+      --ink: #182230;
+      --muted: #687386;
+      --blue: #2878b8;
+      --border: #e4e9f1;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font-family: Arial, Helvetica, sans-serif;
+      color: var(--ink);
+      background: var(--bg);
+    }
+    header {
+      background: linear-gradient(120deg, #1769aa, #2894c7);
+      color: white;
+      padding: 25px clamp(18px, 5vw, 56px);
+    }
+    header .eyebrow { margin: 0 0 8px; opacity: .82; font-size: 13px; letter-spacing: 1.5px; text-transform: uppercase; }
+    header h1 { margin: 0; font-size: clamp(24px, 4vw, 34px); }
+    header p { margin: 9px 0 0; opacity: .9; }
+    main { max-width: 1180px; margin: 28px auto; padding: 0 18px 36px; }
+    .topline { display: flex; justify-content: space-between; align-items: center; gap: 12px; flex-wrap: wrap; margin-bottom: 18px; }
+    .topline h2 { margin: 0; font-size: 19px; }
+    .status { display: inline-flex; align-items: center; gap: 8px; color: var(--muted); font-size: 13px; }
+    .dot { width: 8px; height: 8px; border-radius: 50%; background: #22a06b; display: inline-block; }
+    .metrics { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 16px; margin-bottom: 18px; }
+    .metric, .panel { background: var(--card); border: 1px solid var(--border); border-radius: 14px; box-shadow: 0 4px 16px rgba(20, 43, 75, .04); }
+    .metric { padding: 20px; }
+    .metric-label { color: var(--muted); font-size: 14px; }
+    .metric-value { font-size: clamp(27px, 4vw, 36px); font-weight: 700; margin: 12px 0 5px; }
+    .metric-note { color: var(--muted); font-size: 12px; }
+    .unit { font-size: 16px; font-weight: 500; color: var(--muted); }
+    .charts { display: grid; grid-template-columns: 1fr 1fr; gap: 18px; }
+    .panel { padding: 20px; min-width: 0; }
+    .panel-head { display: flex; justify-content: space-between; align-items: center; gap: 10px; margin-bottom: 18px; }
+    .panel h3 { margin: 0; font-size: 16px; }
+    .tag { font-size: 11px; border-radius: 20px; background: #eef6fc; color: #1769aa; padding: 6px 9px; white-space: nowrap; }
+    .chart-wrap { height: 270px; position: relative; }
+    .footer { display: flex; justify-content: space-between; gap: 12px; flex-wrap: wrap; margin-top: 18px; color: var(--muted); font-size: 12px; }
+    button { border: 0; border-radius: 8px; background: #1769aa; color: white; padding: 10px 14px; cursor: pointer; font-weight: 600; }
+    button:hover { background: #12568c; }
+    .error { color: #b42318; font-size: 13px; margin-top: 12px; display: none; }
+    @media (max-width: 760px) {
+      .metrics { grid-template-columns: 1fr; }
+      .charts { grid-template-columns: 1fr; }
+      .chart-wrap { height: 240px; }
+    }
+  </style>
+</head>
+<body>
+  <header>
+    <p class="eyebrow">IoT · Live monitoring</p>
+    <h1>Temperature &amp; Humidity Dashboard</h1>
+    <p>Arduino + DHT11 sensor · ESP8266MOD · ThingSpeak Channel 3515991</p>
+  </header>
+
+  <main>
+    <div class="topline">
+      <h2>Sensor overview</h2>
+      <div class="status"><span class="dot"></span><span id="statusText">Connecting to ThingSpeak…</span></div>
+    </div>
+
+    <section class="metrics">
+      <article class="metric">
+        <div class="metric-label">Temperature</div>
+        <div class="metric-value" id="temperatureValue">-- <span class="unit">°C</span></div>
+        <div class="metric-note" id="temperatureTime">Waiting for data</div>
+      </article>
+      <article class="metric">
+        <div class="metric-label">Humidity</div>
+        <div class="metric-value" id="humidityValue">-- <span class="unit">%</span></div>
+        <div class="metric-note" id="humidityTime">Waiting for data</div>
+      </article>
+      <article class="metric">
+        <div class="metric-label">Channel</div>
+        <div class="metric-value">3515991</div>
+        <div class="metric-note">ThingSpeak public channel</div>
+      </article>
+    </section>
+
+    <section class="charts">
+      <article class="panel">
+        <div class="panel-head"><h3>Temperature history</h3><span class="tag">Field 1 · °C</span></div>
+        <div class="chart-wrap"><canvas id="temperatureChart"></canvas></div>
+      </article>
+      <article class="panel">
+        <div class="panel-head"><h3>Humidity history</h3><span class="tag">Field 2 · %</span></div>
+        <div class="chart-wrap"><canvas id="humidityChart"></canvas></div>
+      </article>
+    </section>
+
+    <div class="footer">
+      <span id="updatedText">Data has not been loaded yet.</span>
+      <button id="refreshButton">Refresh data</button>
+    </div>
+    <p class="error" id="errorText"></p>
+  </main>
+
+  <script>
+    // Your screenshot shows channel 3515991. Field 1 = temperature, Field 2 = humidity.
+    const CHANNEL_ID = "3515991";
+    const READ_API_KEY = "YCQLM2TQNRIH5FQ7";
+    const FEED_URL = `https://api.thingspeak.com/channels/${CHANNEL_ID}/feeds.json?api_key=${READ_API_KEY}&results=20`;
+
+    const chartOptions = {
+      responsive: true,
+      maintainAspectRatio: false,
+      interaction: { mode: "index", intersect: false },
+      plugins: { legend: { display: false } },
+      scales: {
+        x: { grid: { display: false }, ticks: { maxTicksLimit: 6, color: "#687386" } },
+        y: { beginAtZero: false, grid: { color: "#edf0f5" }, ticks: { color: "#687386" } }
+      }
+    };
+
+    const temperatureChart = new Chart(document.getElementById("temperatureChart"), {
+      type: "line",
+      data: { labels: [], datasets: [{ data: [], borderColor: "#e34b4b", backgroundColor: "rgba(227,75,75,.12)", fill: true, tension: .3, pointRadius: 3, borderWidth: 2 }] },
+      options: chartOptions
+    });
+
+    const humidityChart = new Chart(document.getElementById("humidityChart"), {
+      type: "line",
+      data: { labels: [], datasets: [{ data: [], borderColor: "#2878b8", backgroundColor: "rgba(40,120,184,.12)", fill: true, tension: .3, pointRadius: 3, borderWidth: 2 }] },
+      options: chartOptions
+    });
+
+    function formatTime(value) {
+      if (!value) return "Time unavailable";
+      const date = new Date(value);
+      return Number.isNaN(date.getTime()) ? value : date.toLocaleString();
+    }
+
+    async function loadData() {
+      const status = document.getElementById("statusText");
+      const error = document.getElementById("errorText");
+      const updated = document.getElementById("updatedText");
+      error.style.display = "none";
+      status.textContent = "Loading data…";
+
+      try {
+        const response = await fetch(FEED_URL, { cache: "no-store" });
+        if (!response.ok) throw new Error(`Request failed (${response.status})`);
+        const result = await response.json();
+        const feeds = (result.feeds || []).filter(feed => feed.field1 !== null || feed.field2 !== null);
+
+        if (!feeds.length) throw new Error("No readings found. Check that the channel has data and is public.");
+
+        const labels = feeds.map(feed => new Date(feed.created_at).toLocaleString([], { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" }));
+        const temps = feeds.map(feed => feed.field1 === null ? null : Number(feed.field1));
+        const hums = feeds.map(feed => feed.field2 === null ? null : Number(feed.field2));
+
+        temperatureChart.data.labels = labels;
+        temperatureChart.data.datasets[0].data = temps;
+        temperatureChart.update();
+
+        humidityChart.data.labels = labels;
+        humidityChart.data.datasets[0].data = hums;
+        humidityChart.update();
+
+        const latest = [...feeds].reverse().find(feed => feed.field1 !== null || feed.field2 !== null);
+        document.getElementById("temperatureValue").innerHTML = `${latest.field1 !== null ? Number(latest.field1).toFixed(1) : "--"} <span class="unit">°C</span>`;
+        document.getElementById("humidityValue").innerHTML = `${latest.field2 !== null ? Number(latest.field2).toFixed(1) : "--"} <span class="unit">%</span>`;
+        document.getElementById("temperatureTime").textContent = `Latest reading: ${formatTime(latest.created_at)}`;
+        document.getElementById("humidityTime").textContent = `Latest reading: ${formatTime(latest.created_at)}`;
+        status.textContent = "Connected · channel data loaded";
+        updated.textContent = `Showing ${feeds.length} readings · Last refreshed ${new Date().toLocaleTimeString()}`;
+      } catch (err) {
+        status.textContent = "Could not load data";
+        error.textContent = `${err.message}. Check that the Read API Key and channel ID are correct.`;
+        error.style.display = "block";
+      }
+    }
+
+    document.getElementById("refreshButton").addEventListener("click", loadData);
+    loadData();
+    setInterval(loadData, 30000);
+  </script>
+</body>
+</html>
